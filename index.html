@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <title>XAU/USD Gold News Signal Dashboard</title>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0f172a; color: #f8fafc; padding: 30px; }
+    h1 { color: #f59e0b; text-align: center; margin-bottom: 30px; }
+    .card { background: #1e293b; border-radius: 12px; padding: 20px; margin-bottom: 20px; border-left: 6px solid #64748b; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+    .buy { border-left-color: #22c55e; }
+    .sell { border-left-color: #ef4444; }
+    .badge { padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 0.9em; }
+    .badge-buy { background: #166534; color: #4ade80; }
+    .badge-sell { background: #991b1b; color: #fca5a5; }
+    .badge-wait { background: #334155; color: #94a3b8; }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-top: 15px; background: #0f172a; padding: 12px; border-radius: 8px; font-size: 0.95em; }
+  </style>
+</head>
+<body>
+
+  <h1>🏆 Gold (XAU/USD) News Impact Signals</h1>
+  <div id="news-container">กำลังโหลดข้อมูลสัญญาณข่าว...</div>
+
+  <script>
+    async function loadSignals() {
+      try {
+        const res = await fetch('/api/gold-signals');
+        const data = await res.json();
+        
+        const container = document.getElementById('news-container');
+        container.innerHTML = '';
+
+        data.forEach(item => {
+          let cardClass = '';
+          let badgeClass = 'badge-wait';
+          
+          if (item.signal.includes('BUY')) {
+            cardClass = 'buy';
+            badgeClass = 'badge-buy';
+          } else if (item.signal.includes('SELL')) {
+            cardClass = 'sell';
+            badgeClass = 'badge-sell';
+          }
+
+          container.innerHTML += `
+            <div class="card ${cardClass}">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin: 0; color: #e2e8f0;">${item.title} (${item.time})</h3>
+                <span class="badge ${badgeClass}">${item.signal}</span>
+              </div>
+              <p style="color: #cbd5e1; margin-top: 10px; font-size: 1.05em;"><strong>ผลกระทบต่อทองคำ:</strong> ${item.analysis}</p>
+              <div class="grid">
+                <div>คาดการณ์: <strong>${item.forecast}</strong></div>
+                <div>ครั้งก่อน: <strong>${item.previous}</strong></div>
+                <div>ตัวเลขจริง: <strong style="color: #f59e0b;">${item.actual}</strong></div>
+                <div>วันที่: <strong>${item.date}</strong></div>
+              </div>
+            </div>
+          `;
+        });
+      } catch (err) {
+        document.getElementById('news-container').innerHTML = '<p style="color: #ef4444; text-align: center;">เกิดข้อผิดพลาดในการดึงข้อมูล</p>';
+      }
+    }
+
+    loadSignals();
+  </script>
+</body>
+</html>
