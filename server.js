@@ -3,75 +3,103 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-function convertToThaiTime(timeStr) {
-  if (!timeStr || (!timeStr.includes('am') && !timeStr.includes('pm'))) return timeStr || 'ตลอดวัน';
+// แปลงเวลาเป็นเวลาไทย (GMT+7)
+function convertToThaiTime(dateStr, timeStr) {
+  if (!timeStr || timeStr.toLowerCase().includes('all day') || timeStr.toLowerCase().includes('day')) return 'ตลอดวัน';
   let [time, modifier] = timeStr.split(/(am|pm)/i);
+  if (!modifier) return timeStr;
   let [hours, minutes] = time.split(':').map(Number);
-  if (!minutes) minutes = 0;
+  if (isNaN(minutes)) minutes = 0;
   if (modifier.toLowerCase() === 'pm' && hours < 12) hours += 12;
   if (modifier.toLowerCase() === 'am' && hours === 12) hours = 0;
+  
+  // แปลง UTC/EST ของ Forex Factory เป็นเวลาไทย (+7 หรือ +11/12 ชดเชยเวลา)
   let thaiHours = (hours + 11) % 24;
   return `${String(thaiHours).padStart(2, '0')}:${String(minutes).padStart(2, '0')} น.`;
 }
 
 app.get('/api/gold-signals', async (req, res) => {
-  const timeframe = req.query.timeframe || 'this'; // this, next, month
+  const timeframe = req.query.timeframe || 'this';
+  
+  // เลือก URL API สำรองที่เสถียรที่สุด
+  let apiUrl = 'https://nfp.ourfxbook.com/fetch.php?do=calendar&week=this';
+  if (timeframe === 'next') {
+    apiUrl = 'https://nfp.ourfxbook.com/fetch.php?do=calendar&week=next';
+  }
+
   try {
-    const response = await axios.get(`https://nfp.forexfactory.com/fetch.php?do=calendar&week=${timeframe}`, {
+    const response = await axios.get(apiUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json'
-      }
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*'
+      },
+      timeout: 8000
     });
 
-    const events = response.data || [];
-    // กรองเฉพาะ USD High Impact (กล่องแดง)
-    const usdHighImpactEvents = events.filter(e => e.country === 'USD' && e.impact === 'High');
+    let events = [];
+    if (Array.isArray(response.data)) {
+      events = response.data;
+    } else if (response.data && typeof response.data === 'object') {
+      events = Object.values(response.data);
+    }
 
-    const signals = usdHighImpactEvents.map(event => {
-      const isInverse = event.title.toLowerCase().includes('unemployment claims');
+    // กรองเฉพาะข่าว USD ที่มี Impact สูง (กล่องแดง / High / High Impact)
+    const usdHighEvents = events.filter(e => {
+      const country = (e.country || e.currency || '').toUpperCase();
+      const impact = (e.impact || '').toLowerCase();
+      return country === 'USD' && (impact === 'high' || impact === 'red' || impact === '3');
+    });
+
+    const signals = usdHighEvents.map(event => {
+      const title = event.title || event.name || 'USD News Event';
+      const isInverse = title.toLowerCase().includes('unemployment claims');
       let impactOnGold = "";
       let direction = "UPCOMING";
       let status = "PENDING";
 
-      if (event.actual && event.forecast) {
-        status = "DONE";
-        const actual = parseFloat(event.actual.replace(/[^0-9.-]/g, ''));
-        const forecast = parseFloat(event.forecast.replace(/[^0-9.-]/g, ''));
+      const actualVal = event.actual || '';
+      const forecastVal = event.forecast || 'รออัปเดต';
 
-        if (!isNaN(actual) && !isNaN(forecast)) {
-          const isUsdStrong = isInverse ? actual < forecast : actual > forecast;
+      if (actualVal && actualVal.trim() !== '' && actualVal !== 'รอผล') {
+        status = "DONE";
+        const actualNum = parseFloat(actualVal.replace(/[^0-9.-]/g, ''));
+        const forecastNum = parseFloat(forecastVal.replace(/[^0-9.-]/g, ''));
+
+        if (!isNaN(actualNum) && !isNaN(forecastNum)) {
+          const isUsdStrong = isInverse ? actualNum < forecastNum : actualNum > forecastNum;
           if (isUsdStrong) {
-            impactOnGold = `ผลจริง (${event.actual}): USD แข็งค่า ➔ **กดดันทองคำร่วงลง**`;
+            impactOnGold = `ผลจริง (${actualVal}): USD แข็งค่า ➔ **กดดันทองคำร่วงลง**`;
             direction = "DOWN (SELL)";
           } else {
-            impactOnGold = `ผลจริง (${event.actual}): USD อ่อนค่า ➔ **หนุนทองคำดีดตัวขึ้น**`;
+            impactOnGold = `ผลจริง (${actualVal}): USD อ่อนค่า ➔ **หนุนทองคำดีดตัวขึ้น**`;
             direction = "UP (BUY)";
           }
+        } else {
+          impactOnGold = `ผลจริงออกแล้ว: ${actualVal}`;
+          direction = "RELEASED";
         }
       } else {
         status = "PENDING";
-        const fcText = event.forecast || 'รออัปเดต';
         if (isInverse) {
-          impactOnGold = `📊 <b>วิเคราะห์ฉากทัศน์ (คาดการณ์: ${fcText}):</b><br>` +
-            `• ตัวเลขจริง <b>> ${fcText}</b> (แย่ต่อ USD) ➔ ทองคำมีโอกาส <b>ดีดขึ้น (BUY)</b><br>` +
-            `• ตัวเลขจริง <b>< ${fcText}</b> (ดีต่อ USD) ➔ ทองคำมีโอกาส <b>ทุบลง (SELL)</b>`;
+          impactOnGold = `📊 <b>วิเคราะห์ฉากทัศน์ (คาดการณ์: ${forecastVal}):</b><br>` +
+            `• ตัวเลขจริง <b>> ${forecastVal}</b> (แย่ต่อ USD) ➔ ทองคำมีโอกาส <b>ดีดขึ้น (BUY)</b><br>` +
+            `• ตัวเลขจริง <b>< ${forecastVal}</b> (ดีต่อ USD) ➔ ทองคำมีโอกาส <b>ทุบลง (SELL)</b>`;
         } else {
-          impactOnGold = `📊 <b>วิเคราะห์ฉากทัศน์ (คาดการณ์: ${fcText}):</b><br>` +
-            `• ตัวเลขจริง <b>> ${fcText}</b> (ดีต่อ USD) ➔ ทองคำมีโอกาส <b>ทุบลง (SELL)</b><br>` +
-            `• ตัวเลขจริง <b>< ${fcText}</b> (แย่ต่อ USD) ➔ ทองคำมีโอกาส <b>ดีดขึ้น (BUY)</b>`;
+          impactOnGold = `📊 <b>วิเคราะห์ฉากทัศน์ (คาดการณ์: ${forecastVal}):</b><br>` +
+            `• ตัวเลขจริง <b>> ${forecastVal}</b> (ดีต่อ USD) ➔ ทองคำมีโอกาส <b>ทุบลง (SELL)</b><br>` +
+            `• ตัวเลขจริง <b>< ${forecastVal}</b> (แย่ต่อ USD) ➔ ทองคำมีโอกาส <b>ดีดขึ้น (BUY)</b>`;
         }
         direction = "UPCOMING NEWS";
       }
 
       return {
-        title: event.title,
-        date: event.date,
-        time: event.time,
-        thaiTime: convertToThaiTime(event.time),
-        forecast: event.forecast || 'รออัปเดต',
+        title: title,
+        date: event.date || '',
+        time: event.time || '',
+        thaiTime: convertToThaiTime(event.date, event.time),
+        forecast: forecastVal,
         previous: event.previous || '-',
-        actual: event.actual || 'รอผล',
+        actual: actualVal || 'รอผล',
         signal: direction,
         analysis: impactOnGold,
         status: status
@@ -80,7 +108,8 @@ app.get('/api/gold-signals', async (req, res) => {
 
     res.json(signals);
   } catch (error) {
-    res.status(500).json({ error: 'ไม่สามารถดึงข้อมูลได้' });
+    console.error('Fetch error:', error.message);
+    res.status(500).json({ error: 'ไม่สามารถดึงข้อมูลข่าวได้' });
   }
 });
 
@@ -118,11 +147,9 @@ app.get('/', (req, res) => {
       <h1>🏆 Live Gold Signals</h1>
       <div class="subtitle">Forex Factory High Impact News (USD)</div>
       
-      <!-- ปุ่มเลือกช่วงเวลา -->
       <div class="controls">
         <button class="btn active" onclick="loadNews('this', this)">สัปดาห์นี้</button>
         <button class="btn" onclick="loadNews('next', this)">สัปดาห์หน้า</button>
-        <button class="btn" onclick="loadNews('month', this)">ทั้งเดือน</button>
       </div>
 
       <div id="news-container">กำลังดึงข้อมูล...</div>
@@ -134,7 +161,7 @@ app.get('/', (req, res) => {
             btnElement.classList.add('active');
           }
           const container = document.getElementById('news-container');
-          container.innerHTML = '<p style="text-align:center;">กำลังดึงข้อมูลข่าว...</p>';
+          container.innerHTML = '<p style="text-align:center; padding: 30px; color:#94a3b8;">กำลังดึงข้อมูลข่าวจาก Forex Factory...</p>';
 
           fetch('/api/gold-signals?timeframe=' + timeframe)
             .then(res => res.json())
@@ -159,17 +186,16 @@ app.get('/', (req, res) => {
                       <div>คาดการณ์: <strong>\${item.forecast}</strong></div>
                       <div>ครั้งก่อน: <strong>\${item.previous}</strong></div>
                       <div>ตัวเลขจริง: <strong style="color:#f59e0b;">\${item.actual}</strong></div>
-                      <div>ระดับ: <strong style="color:#ef4444;">HIGH</strong></div>
+                      <div>ระดับ: <strong style="color:#ef4444;">HIGH (กล่องแดง)</strong></div>
                     </div>
                   </div>
                 \`;
               });
             })
             .catch(() => {
-              container.innerHTML = '<p style="text-align:center; color:#ef4444;">เกิดข้อผิดพลาดในการโหลดข้อมูล</p>';
+              container.innerHTML = '<p style="text-align:center; color:#ef4444; padding:30px;">เกิดข้อผิดพลาดในการโหลดข้อมูล</p>';
             });
         }
-        // โหลดข่าวสัปดาห์นี้เป็นค่าเริ่มต้น
         loadNews('this');
       </script>
     </body>
