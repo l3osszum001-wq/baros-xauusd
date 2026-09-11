@@ -1,8 +1,6 @@
 const express = require('express');
 const axios = require('axios');
 const app = express();
-
-// ใช้ Port จาก Cloud Provider หรือใช้ 3000 สำหรับเปิดในคอม
 const PORT = process.env.PORT || 3000;
 
 function convertToThaiTime(timeStr) {
@@ -10,24 +8,24 @@ function convertToThaiTime(timeStr) {
   let [time, modifier] = timeStr.split(/(am|pm)/i);
   let [hours, minutes] = time.split(':').map(Number);
   if (!minutes) minutes = 0;
-
   if (modifier.toLowerCase() === 'pm' && hours < 12) hours += 12;
   if (modifier.toLowerCase() === 'am' && hours === 12) hours = 0;
-
   let thaiHours = (hours + 11) % 24;
   return `${String(thaiHours).padStart(2, '0')}:${String(minutes).padStart(2, '0')} น.`;
 }
 
 app.get('/api/gold-signals', async (req, res) => {
+  const timeframe = req.query.timeframe || 'this'; // this, next, month
   try {
-    const response = await axios.get('https://nfp.forexfactory.com/fetch.php?do=calendar&week=this', {
+    const response = await axios.get(`https://nfp.forexfactory.com/fetch.php?do=calendar&week=${timeframe}`, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/json'
       }
     });
 
-    const events = response.data;
+    const events = response.data || [];
+    // กรองเฉพาะ USD High Impact (กล่องแดง)
     const usdHighImpactEvents = events.filter(e => e.country === 'USD' && e.impact === 'High');
 
     const signals = usdHighImpactEvents.map(event => {
@@ -82,7 +80,7 @@ app.get('/api/gold-signals', async (req, res) => {
 
     res.json(signals);
   } catch (error) {
-    res.status(500).json({ error: 'ไม่สามารถดึงข้อมูล Forex Factory ได้' });
+    res.status(500).json({ error: 'ไม่สามารถดึงข้อมูลได้' });
   }
 });
 
@@ -92,14 +90,16 @@ app.get('/', (req, res) => {
     <html lang="th">
     <head>
       <meta charset="UTF-8">
-      <!-- ตั้งค่า Viewport เพื่อให้รองรับ iPhone / iPad / Mobile 100% -->
       <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
       <title>Forex Factory Gold Signals</title>
       <style>
         * { box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0f172a; color: #f8fafc; margin: 0; padding: 15px; }
-        h1 { color: #f59e0b; text-align: center; font-size: 1.5rem; margin-top: 10px; }
-        .subtitle { text-align: center; color: #94a3b8; font-size: 0.85rem; margin-bottom: 20px; }
+        h1 { color: #f59e0b; text-align: center; font-size: 1.5rem; margin-top: 10px; margin-bottom: 5px; }
+        .subtitle { text-align: center; color: #94a3b8; font-size: 0.85rem; margin-bottom: 15px; }
+        .controls { display: flex; justify-content: center; gap: 10px; margin-bottom: 20px; }
+        .btn { background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 0.85rem; }
+        .btn.active { background: #f59e0b; color: #0f172a; border-color: #f59e0b; }
         .card { background: #1e293b; border-radius: 12px; padding: 15px; margin-bottom: 15px; border-left: 5px solid #64748b; }
         .buy { border-left-color: #22c55e; }
         .sell { border-left-color: #ef4444; }
@@ -110,8 +110,6 @@ app.get('/', (req, res) => {
         .badge-buy { background: #166534; color: #4ade80; }
         .badge-sell { background: #991b1b; color: #fca5a5; }
         .badge-pending { background: #b91c1c; color: #fca5a5; }
-        
-        /* Grid สำหรับแสดงผลบนมือถือและแท็บเล็ต */
         .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 12px; background: #0f172a; padding: 10px; border-radius: 8px; font-size: 0.85rem; }
         @media(min-width: 768px) { .grid { grid-template-columns: repeat(4, 1fr); } }
       </style>
@@ -119,39 +117,60 @@ app.get('/', (req, res) => {
     <body>
       <h1>🏆 Live Gold Signals</h1>
       <div class="subtitle">Forex Factory High Impact News (USD)</div>
+      
+      <!-- ปุ่มเลือกช่วงเวลา -->
+      <div class="controls">
+        <button class="btn active" onclick="loadNews('this', this)">สัปดาห์นี้</button>
+        <button class="btn" onclick="loadNews('next', this)">สัปดาห์หน้า</button>
+        <button class="btn" onclick="loadNews('month', this)">ทั้งเดือน</button>
+      </div>
+
       <div id="news-container">กำลังดึงข้อมูล...</div>
 
       <script>
-        fetch('/api/gold-signals')
-          .then(res => res.json())
-          .then(data => {
-            const container = document.getElementById('news-container');
-            container.innerHTML = '';
-            if(!data || !data.length) {
-              container.innerHTML = '<p style="text-align:center;">สัปดาห์นี้ไม่มีข่าว USD กล่องแดง</p>';
-              return;
-            }
-            data.forEach(item => {
-              let cardClass = item.status === 'PENDING' ? 'pending' : (item.signal.includes('BUY') ? 'buy' : 'sell');
-              let badgeClass = item.status === 'PENDING' ? 'badge-pending' : (item.signal.includes('BUY') ? 'badge-buy' : 'badge-sell');
-              
-              container.innerHTML += \`
-                <div class="card \${cardClass}">
-                  <div class="header-box">
-                    <h3 style="margin:0; font-size: 1.05rem;">🟥 \${item.title} <br><span style="color: #f59e0b; font-size: 0.9rem;">(\${item.date} - \${item.thaiTime})</span></h3>
-                    <span class="badge \${badgeClass}">\${item.signal}</span>
+        function loadNews(timeframe, btnElement) {
+          if(btnElement) {
+            document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+            btnElement.classList.add('active');
+          }
+          const container = document.getElementById('news-container');
+          container.innerHTML = '<p style="text-align:center;">กำลังดึงข้อมูลข่าว...</p>';
+
+          fetch('/api/gold-signals?timeframe=' + timeframe)
+            .then(res => res.json())
+            .then(data => {
+              container.innerHTML = '';
+              if(!data || !data.length) {
+                container.innerHTML = '<p style="text-align:center; color:#94a3b8; padding:30px;">ช่วงเวลานี้ไม่มีข่าว USD กล่องแดง</p>';
+                return;
+              }
+              data.forEach(item => {
+                let cardClass = item.status === 'PENDING' ? 'pending' : (item.signal.includes('BUY') ? 'buy' : 'sell');
+                let badgeClass = item.status === 'PENDING' ? 'badge-pending' : (item.signal.includes('BUY') ? 'badge-buy' : 'badge-sell');
+                
+                container.innerHTML += \`
+                  <div class="card \${cardClass}">
+                    <div class="header-box">
+                      <h3 style="margin:0; font-size: 1.05rem;">🟥 \${item.title} <br><span style="color: #f59e0b; font-size: 0.9rem;">(\${item.date} - \${item.thaiTime})</span></h3>
+                      <span class="badge \${badgeClass}">\${item.signal}</span>
+                    </div>
+                    <div style="margin-top: 10px; font-size: 0.9rem; line-height: 1.5; color: #e2e8f0;">\${item.analysis}</div>
+                    <div class="grid">
+                      <div>คาดการณ์: <strong>\${item.forecast}</strong></div>
+                      <div>ครั้งก่อน: <strong>\${item.previous}</strong></div>
+                      <div>ตัวเลขจริง: <strong style="color:#f59e0b;">\${item.actual}</strong></div>
+                      <div>ระดับ: <strong style="color:#ef4444;">HIGH</strong></div>
+                    </div>
                   </div>
-                  <div style="margin-top: 10px; font-size: 0.9rem; line-height: 1.5; color: #e2e8f0;">\${item.analysis}</div>
-                  <div class="grid">
-                    <div>คาดการณ์: <strong>\${item.forecast}</strong></div>
-                    <div>ครั้งก่อน: <strong>\${item.previous}</strong></div>
-                    <div>ตัวเลขจริง: <strong style="color:#f59e0b;">\${item.actual}</strong></div>
-                    <div>ระดับ: <strong style="color:#ef4444;">HIGH</strong></div>
-                  </div>
-                </div>
-              \`;
+                \`;
+              });
+            })
+            .catch(() => {
+              container.innerHTML = '<p style="text-align:center; color:#ef4444;">เกิดข้อผิดพลาดในการโหลดข้อมูล</p>';
             });
-          });
+        }
+        // โหลดข่าวสัปดาห์นี้เป็นค่าเริ่มต้น
+        loadNews('this');
       </script>
     </body>
     </html>
